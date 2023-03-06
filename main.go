@@ -30,11 +30,14 @@ func main() {
 	// First-come, first-serve scheduling
 	FCFSSchedule(os.Stdout, "First-come, first-serve", processes)
 
-	//SJFSchedule(os.Stdout, "Shortest-job-first", processes)
-	//
-	//SJFPrioritySchedule(os.Stdout, "Priority", processes)
-	//
-	//RRSchedule(os.Stdout, "Round-robin", processes)
+	// Shortest Job First, "shortest burst" with preemption
+	SJFSchedule(os.Stdout, "Shortest-job-first", processes)
+
+	// Shortest Job First, Highest Priority with preemption
+	SJFPrioritySchedule(os.Stdout, "Priority", processes)
+
+	// Round Robin Schedule, 1 time unit on the cpu then rotate
+	RRSchedule(os.Stdout, "Round-robin", processes)
 }
 
 func openProcessingFile(args ...string) (*os.File, func(), error) {
@@ -127,11 +130,418 @@ func FCFSSchedule(w io.Writer, title string, processes []Process) {
 	outputSchedule(w, schedule, aveWait, aveTurnaround, aveThroughput)
 }
 
-//func SJFPrioritySchedule(w io.Writer, title string, processes []Process) { }
-//
-//func SJFSchedule(w io.Writer, title string, processes []Process) { }
-//
-//func RRSchedule(w io.Writer, title string, processes []Process) { }
+func SJFPrioritySchedule(w io.Writer, title string, processes []Process) {
+	var (
+		totalWait       float64
+		totalTurnaround float64
+		lastCompletion  float64
+		waitingTime     int64
+		completion      int64
+		schedule        = make([][]string, len(processes))
+		gantt           = make([]TimeSlice, 0)
+
+		timeUnit          int64 = 1
+		currentTime       int64 = 0
+		readyQueue        []Process
+		tempQueue         []Process
+		dummyProces       Process
+		lastArriveProcess = findLastArrival(processes)
+	)
+
+	// Priming ready queue to run the while loop
+	// Will delete the dummy process after entering the loop
+	readyQueue = append(readyQueue, dummyProces)
+
+	for len(readyQueue) != 0 {
+
+		// Delete the dummy Process
+		if currentTime == 0 {
+			readyQueue = nil
+		}
+
+		//Add a process to ready queue if the arrival time is same as current time
+		if currentTime <= lastArriveProcess {
+
+			for i := range processes {
+
+				if processes[i].ArrivalTime == currentTime {
+					readyQueue = append(readyQueue, processes[i])
+				}
+
+			}
+		}
+		//Run the process on cpu
+		if len(readyQueue) > 1 {
+			var targetProcessLocation int = 0
+
+			//Find highest priority process
+			targetProcessLocation = findHighestPriority(readyQueue)
+			// Add the process to the gantt schedule
+			gantt = append(gantt, TimeSlice{
+				PID:   readyQueue[targetProcessLocation].ProcessID,
+				Start: currentTime,
+				Stop:  currentTime + timeUnit,
+			})
+
+			readyQueue[targetProcessLocation].BurstDuration = readyQueue[targetProcessLocation].BurstDuration - 1
+
+		} else {
+			// Add the process to the gantt schedule
+			gantt = append(gantt, TimeSlice{
+				PID:   readyQueue[0].ProcessID,
+				Start: currentTime,
+				Stop:  currentTime + timeUnit,
+			})
+
+			readyQueue[0].BurstDuration = readyQueue[0].BurstDuration - 1
+		}
+
+		// If burst duration of a process is 0 in ready queue, then it is complete and needs to be deleted from ready queue
+		for j := 0; j < len(readyQueue); j++ {
+
+			// tempQueue will contain process that have burst duration greater than 0 or "not done"
+			if readyQueue[j].BurstDuration > 0 {
+				tempQueue = append(tempQueue, readyQueue[j])
+			}
+		}
+
+		//Set readyQueue to tempQueue and erase tempQueue
+		readyQueue = nil
+
+		readyQueue = tempQueue
+		tempQueue = nil
+
+		// Increase current time by 1
+		currentTime = currentTime + timeUnit
+
+	}
+	// Process Done. Time to report process schedule
+
+	//Make Gantt Schedule Pretty ie Not have broken into each time unit
+	//Setting the start time of next element in gantt to previous element if it has same PID
+	for n := 0; n < len(gantt)-1; n++ {
+		if gantt[n].PID == gantt[n+1].PID {
+			gantt[n+1].Start = gantt[n].Start
+		}
+	}
+	//Deleting any element in gantt that has same start time as next element. This will make the PID only have 1 entry in gantt from start until stop until next PID
+	for n := 0; n < len(gantt)-1; n++ {
+		if gantt[n].Start == gantt[n+1].Start {
+			gantt = append(gantt[:n], gantt[n+1:]...)
+			n-- // Has to be used to have correct counter in for loop. Source Used: https://dinolai.com/notes/golang/golang-delete-slice-item-in-range-problem.html
+		}
+	}
+
+	// Calculate table
+	for i := range processes {
+		completion = findExitTime(processes[i].ProcessID, gantt)
+		turnaround := completion - processes[i].ArrivalTime
+		waitingTime = turnaround - processes[i].BurstDuration
+
+		totalTurnaround += float64(turnaround)
+		totalWait += float64(waitingTime)
+
+		schedule[i] = []string{
+			fmt.Sprint(processes[i].ProcessID),
+			fmt.Sprint(processes[i].Priority),
+			fmt.Sprint(processes[i].BurstDuration),
+			fmt.Sprint(processes[i].ArrivalTime),
+			fmt.Sprint(waitingTime),
+			fmt.Sprint(turnaround),
+			fmt.Sprint(completion),
+		}
+	}
+
+	// Calculate last few things
+	lastCompletion = float64(findHighestExitTime(gantt))
+	count := float64(len(processes))
+	aveWait := totalWait / count
+	aveTurnaround := totalTurnaround / count
+	aveThroughput := count / lastCompletion
+
+	// Outputs for function
+	outputTitle(w, title)
+	outputGantt(w, gantt)
+	outputSchedule(w, schedule, aveWait, aveTurnaround, aveThroughput)
+}
+
+func SJFSchedule(w io.Writer, title string, processes []Process) {
+	var (
+		totalWait       float64
+		totalTurnaround float64
+		lastCompletion  float64
+		waitingTime     int64
+		completion      int64
+		schedule        = make([][]string, len(processes))
+		gantt           = make([]TimeSlice, 0)
+
+		timeUnit          int64 = 1
+		currentTime       int64 = 0
+		readyQueue        []Process
+		tempQueue         []Process
+		dummyProces       Process
+		lastArriveProcess = findLastArrival(processes)
+	)
+
+	// Priming ready queue to run the while loop
+	// Will delete the dummy process after entering the loop
+	readyQueue = append(readyQueue, dummyProces)
+
+	for len(readyQueue) != 0 {
+
+		// Delete the dummy Process
+		if currentTime == 0 {
+			readyQueue = nil
+		}
+
+		//Add a process to ready queue if the arrival time is same as current time
+		if currentTime <= lastArriveProcess {
+
+			for i := range processes {
+
+				if processes[i].ArrivalTime == currentTime {
+					readyQueue = append(readyQueue, processes[i])
+				}
+
+			}
+		}
+		//Run the process on cpu
+		if len(readyQueue) > 1 {
+			var targetProcessLocation int = 0
+
+			//Find shorstest burstduration
+			targetProcessLocation = findShortestBurst(readyQueue)
+			// Add the process to the gantt schedule
+			gantt = append(gantt, TimeSlice{
+				PID:   readyQueue[targetProcessLocation].ProcessID,
+				Start: currentTime,
+				Stop:  currentTime + timeUnit,
+			})
+
+			readyQueue[targetProcessLocation].BurstDuration = readyQueue[targetProcessLocation].BurstDuration - 1
+
+		} else {
+			// Add the process to the gantt schedule
+			gantt = append(gantt, TimeSlice{
+				PID:   readyQueue[0].ProcessID,
+				Start: currentTime,
+				Stop:  currentTime + timeUnit,
+			})
+
+			readyQueue[0].BurstDuration = readyQueue[0].BurstDuration - 1
+		}
+
+		// If burst duration of a process is 0 in ready queue, then it is complete and needs to be deleted from ready queue
+		for j := 0; j < len(readyQueue); j++ {
+
+			// tempQueue will contain process that have burst duration greater than 0 or "not done"
+			if readyQueue[j].BurstDuration > 0 {
+				tempQueue = append(tempQueue, readyQueue[j])
+			}
+		}
+
+		//Set readyQueue to tempQueue and erase tempQueue
+		readyQueue = nil
+
+		readyQueue = tempQueue
+		tempQueue = nil
+
+		// Increase current time by 1
+		currentTime = currentTime + timeUnit
+
+	}
+	// Process Done. Time to report process schedule
+
+	//Make Gantt Schedule Pretty ie Not have broken into each time unit
+	//Setting the start time of next element in gantt to previous element if it has same PID
+	for n := 0; n < len(gantt)-1; n++ {
+		if gantt[n].PID == gantt[n+1].PID {
+			gantt[n+1].Start = gantt[n].Start
+		}
+	}
+	//Deleting any element in gantt that has same start time as next element. This will make the PID only have 1 entry in gantt from start until stop until next PID
+	for n := 0; n < len(gantt)-1; n++ {
+		if gantt[n].Start == gantt[n+1].Start {
+			gantt = append(gantt[:n], gantt[n+1:]...)
+			n-- // Has to be used to have correct counter in for loop. Source Used: https://dinolai.com/notes/golang/golang-delete-slice-item-in-range-problem.html
+		}
+	}
+
+	// Calculate table
+	for i := range processes {
+		completion = findExitTime(processes[i].ProcessID, gantt)
+		turnaround := completion - processes[i].ArrivalTime
+		waitingTime = turnaround - processes[i].BurstDuration
+
+		totalTurnaround += float64(turnaround)
+		totalWait += float64(waitingTime)
+
+		schedule[i] = []string{
+			fmt.Sprint(processes[i].ProcessID),
+			fmt.Sprint(processes[i].Priority),
+			fmt.Sprint(processes[i].BurstDuration),
+			fmt.Sprint(processes[i].ArrivalTime),
+			fmt.Sprint(waitingTime),
+			fmt.Sprint(turnaround),
+			fmt.Sprint(completion),
+		}
+	}
+
+	// Calculate last few things
+	lastCompletion = float64(findHighestExitTime(gantt))
+	count := float64(len(processes))
+	aveWait := totalWait / count
+	aveTurnaround := totalTurnaround / count
+	aveThroughput := count / lastCompletion
+
+	// Outputs for function
+	outputTitle(w, title)
+	outputGantt(w, gantt)
+	outputSchedule(w, schedule, aveWait, aveTurnaround, aveThroughput)
+}
+
+func RRSchedule(w io.Writer, title string, processes []Process) {
+	var (
+		totalWait       float64
+		totalTurnaround float64
+		lastCompletion  float64
+		waitingTime     int64
+		completion      int64
+		schedule        = make([][]string, len(processes))
+		gantt           = make([]TimeSlice, 0)
+
+		timeUnit          int64 = 1
+		currentTime       int64 = 0
+		readyQueue        []Process
+		tempQueue         []Process
+		dummyProces       Process
+		lastArriveProcess = findLastArrival(processes)
+	)
+
+	// Priming ready queue to run the while loop
+	// Will delete the dummy process after entering the loop
+	readyQueue = append(readyQueue, dummyProces)
+
+	for len(readyQueue) != 0 {
+		// Delete the dummy Process
+		if currentTime == 0 {
+			readyQueue = nil
+			tempQueue = nil
+		}
+
+		//Add a process to ready queue if the arrival time is same as current time
+		if currentTime <= lastArriveProcess {
+
+			for i := range processes {
+
+				if processes[i].ArrivalTime == currentTime {
+
+					// For Round Robin we want the newest Arrival to be at the front of the queue
+					tempQueue = append(tempQueue, processes[i])
+
+					for j := 0; j < len(readyQueue); j++ {
+						tempQueue = append(tempQueue, readyQueue[j])
+					}
+					readyQueue = nil
+					readyQueue = tempQueue
+					tempQueue = nil
+				}
+
+			}
+		}
+
+		// Add the process to the gantt schedule
+		gantt = append(gantt, TimeSlice{
+			PID:   readyQueue[0].ProcessID,
+			Start: currentTime,
+			Stop:  currentTime + timeUnit,
+		})
+
+		// Remove one burst duration that was added to gantt chart
+		readyQueue[0].BurstDuration = readyQueue[0].BurstDuration - 1
+
+		// Rotate the readyQueue so that Round Robin occurs. Only occurs when len(readyQueue) > 1
+		if len(readyQueue) > 1 {
+
+			tempQueue = readyQueue[1:]
+			tempQueue = append(tempQueue, readyQueue[0])
+			readyQueue = tempQueue
+
+		}
+		tempQueue = nil
+
+		// If burst duration of a process is 0 in ready queue, then it is complete and needs to be deleted from ready queue
+		for j := 0; j < len(readyQueue); j++ {
+
+			// tempQueue will contain process that have burst duration greater than 0 or "not done"
+			if readyQueue[j].BurstDuration > 0 {
+				tempQueue = append(tempQueue, readyQueue[j])
+			}
+		}
+
+		//Set readyQueue to tempQueue and erase tempQueue
+		readyQueue = nil
+
+		readyQueue = tempQueue
+		tempQueue = nil
+
+		// Increase current time by 1
+		currentTime = currentTime + timeUnit
+
+		if currentTime > 40 {
+			readyQueue = nil
+		}
+
+	}
+	// Process Done. Time to report process schedule
+
+	//Make Gantt Schedule Pretty ie Not have broken into each time unit
+	//Setting the start time of next element in gantt to previous element if it has same PID
+	for n := 0; n < len(gantt)-1; n++ {
+		if gantt[n].PID == gantt[n+1].PID {
+			gantt[n+1].Start = gantt[n].Start
+		}
+	}
+	//Deleting any element in gantt that has same start time as next element. This will make the PID only have 1 entry in gantt from start until stop until next PID
+	for n := 0; n < len(gantt)-1; n++ {
+		if gantt[n].Start == gantt[n+1].Start {
+			gantt = append(gantt[:n], gantt[n+1:]...)
+			n-- // Has to be used to have correct counter in for loop. Source Used: https://dinolai.com/notes/golang/golang-delete-slice-item-in-range-problem.html
+		}
+	}
+
+	// Calculate table
+	for i := range processes {
+		completion = findExitTime(processes[i].ProcessID, gantt)
+		turnaround := completion - processes[i].ArrivalTime
+		waitingTime = turnaround - processes[i].BurstDuration
+
+		totalTurnaround += float64(turnaround)
+		totalWait += float64(waitingTime)
+
+		schedule[i] = []string{
+			fmt.Sprint(processes[i].ProcessID),
+			fmt.Sprint(processes[i].Priority),
+			fmt.Sprint(processes[i].BurstDuration),
+			fmt.Sprint(processes[i].ArrivalTime),
+			fmt.Sprint(waitingTime),
+			fmt.Sprint(turnaround),
+			fmt.Sprint(completion),
+		}
+	}
+
+	// Calculate last few things
+	lastCompletion = float64(findHighestExitTime(gantt))
+	count := float64(len(processes))
+	aveWait := totalWait / count
+	aveTurnaround := totalTurnaround / count
+	aveThroughput := count / lastCompletion
+
+	// Outputs for function
+	outputTitle(w, title)
+	outputGantt(w, gantt)
+	outputSchedule(w, schedule, aveWait, aveTurnaround, aveThroughput)
+}
 
 //endregion
 
@@ -206,6 +616,77 @@ func mustStrToInt(s string) int64 {
 	}
 
 	return i
+}
+
+//endregion
+
+//region Finding Process Info
+
+// Finds the last Arrival Time of the process for the scheduler
+func findLastArrival(myProcesses []Process) int64 {
+	var lastArrival int64 = 0
+
+	for i := range myProcesses {
+		if myProcesses[i].ArrivalTime > lastArrival {
+			lastArrival = myProcesses[i].ArrivalTime
+		}
+	}
+
+	return lastArrival
+}
+
+// Finds the process with the shortest burst duration
+func findShortestBurst(myProcesses []Process) int {
+	var processLocation int = 0
+	var shortestBurst int64 = 10000
+
+	for i := range myProcesses {
+		if myProcesses[i].BurstDuration < shortestBurst {
+			shortestBurst = myProcesses[i].BurstDuration
+			processLocation = i
+		}
+	}
+
+	return processLocation
+}
+
+func findHighestPriority(myProcesses []Process) int {
+	var processLocation int = 0
+	var highestPriority int64 = 10000 //Arbitrarily large so that first process will be top priority
+
+	for i := range myProcesses {
+		if myProcesses[i].Priority < highestPriority {
+			highestPriority = myProcesses[i].Priority
+			processLocation = i
+		}
+	}
+
+	return processLocation
+
+}
+
+// Finds the completion time for a process
+func findExitTime(findExit int64, myGantt []TimeSlice) int64 {
+	var exitTime int64 = 0
+	for n := 0; n < len(myGantt); n++ {
+		if myGantt[n].PID == findExit {
+			if myGantt[n].Stop >= exitTime {
+				exitTime = myGantt[n].Stop
+			}
+		}
+	}
+	return exitTime
+}
+
+// Finds the completion time for a process
+func findHighestExitTime(myGantt []TimeSlice) int64 {
+	var exitTime int64 = 0
+	for n := 0; n < len(myGantt); n++ {
+		if myGantt[n].Stop > exitTime {
+			exitTime = myGantt[n].Stop
+		}
+	}
+	return exitTime
 }
 
 //endregion
